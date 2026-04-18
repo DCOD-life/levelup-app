@@ -37,7 +37,11 @@ export default function CouncilPage({ user, onLogout }) {
 
   // Project modal
   const [showAddProject, setShowAddProject] = useState(false)
-  const [newProject, setNewProject] = useState('')
+  const [projectForm, setProjectForm] = useState({
+    name: '', phase: 'Pha 1 - Phát triển', status: 'active', owner_id: '',
+    start_date: '', deadline: '', contract_price: '', paid_amount: '',
+    description: '', acceptance_criteria: ''
+  })
 
   // Staff modal
   const [showAddStaff, setShowAddStaff] = useState(false)
@@ -139,9 +143,34 @@ export default function CouncilPage({ user, onLogout }) {
 
   // ── Thêm dự án ──
   async function addProject() {
-    if (!newProject.trim()) return
-    await sb.from('projects').insert({ name: newProject, owner_id: user.id, status: 'active' })
-    setNewProject(''); setShowAddProject(false)
+    if (!projectForm.name.trim()) { alert('Vui lòng nhập tên dự án!'); return }
+    if (!projectForm.owner_id) { alert('Vui lòng chọn chủ dự án!'); return }
+
+    const { error } = await sb.from('projects').insert({
+      name: projectForm.name,
+      phase: projectForm.phase,
+      status: projectForm.status,
+      owner_id: projectForm.owner_id,
+      start_date: projectForm.start_date || null,
+      deadline: projectForm.deadline || null,
+      contract_price: parseFloat(projectForm.contract_price) || 0,
+      paid_amount: parseFloat(projectForm.paid_amount) || 0,
+      description: projectForm.description || null,
+      acceptance_criteria: projectForm.acceptance_criteria || null,
+    })
+
+    if (error) {
+      alert('❌ Lỗi khi tạo dự án: ' + error.message)
+      return
+    }
+
+    alert(`✅ Đã tạo dự án "${projectForm.name}" thành công!`)
+    setProjectForm({
+      name: '', phase: 'Pha 1 - Phát triển', status: 'active', owner_id: '',
+      start_date: '', deadline: '', contract_price: '', paid_amount: '',
+      description: '', acceptance_criteria: ''
+    })
+    setShowAddProject(false)
     loadData()
   }
 
@@ -566,28 +595,135 @@ export default function CouncilPage({ user, onLogout }) {
       )}
 
       {/* ══ MODAL: Thêm dự án ══ */}
+      {/* ══ MODAL: Thêm dự án ══ */}
       {showAddProject && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md shadow-2xl">
-            <div className="flex items-center justify-between px-6 py-5 border-b border-gray-800">
-              <h3 className="text-white font-bold">Thêm dự án mới</h3>
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-5 border-b border-gray-800 sticky top-0 bg-gray-900 z-10">
+              <h3 className="text-white font-bold text-lg">Tạo dự án mới</h3>
               <button onClick={() => setShowAddProject(false)} className="text-gray-500 hover:text-white w-8 h-8 flex items-center justify-center rounded-lg border border-gray-700 transition">✕</button>
             </div>
-            <div className="px-6 py-5">
-              <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Tên dự án</label>
-              <input value={newProject} onChange={e => setNewProject(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && addProject()}
-                placeholder="VD: Taiko Keyboard"
-                className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
-              />
+
+            <div className="px-6 py-5 space-y-6">
+
+              {/* Nhóm 1: Thông tin cơ bản */}
+              <div>
+                <h4 className="text-indigo-400 text-sm font-semibold mb-3 pb-2 border-b border-gray-800">Thông tin cơ bản</h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="col-span-2">
+                    <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Tên dự án <span className="text-red-400">*</span></label>
+                    <input value={projectForm.name}
+                      onChange={e => setProjectForm({ ...projectForm, name: e.target.value })}
+                      placeholder="VD: Ring Cleaner — Pha 1"
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Loại pha</label>
+                    <select value={projectForm.phase}
+                      onChange={e => setProjectForm({ ...projectForm, phase: e.target.value })}
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition">
+                      <option value="Pha 1 - Phát triển">Pha 1 — Phát triển</option>
+                      <option value="Pha 2 - Sản xuất">Pha 2 — Sản xuất</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Trạng thái</label>
+                    <select value={projectForm.status}
+                      onChange={e => setProjectForm({ ...projectForm, status: e.target.value })}
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition">
+                      <option value="active">Đang thực hiện</option>
+                      <option value="paused">Tạm dừng</option>
+                      <option value="completed">Hoàn thành</option>
+                      <option value="cancelled">Huỷ</option>
+                    </select>
+                  </div>
+                  <div className="col-span-2">
+                    <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Chủ dự án</label>
+                    <select value={projectForm.owner_id}
+                      onChange={e => setProjectForm({ ...projectForm, owner_id: e.target.value })}
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition">
+                      <option value="">— Chọn chủ dự án —</option>
+                      {allUsers.filter(u => u.role === 'council' || u.role === 'lead').map(u => (
+                        <option key={u.id} value={u.id}>
+                          {u.name} ({u.role === 'council' ? 'Hội Đồng' : 'Lead'}{u.team ? ' · ' + u.team : ''})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Nhóm 2: Thời gian & Tài chính */}
+              <div>
+                <h4 className="text-indigo-400 text-sm font-semibold mb-3 pb-2 border-b border-gray-800">Thời gian & Tài chính</h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Ngày bắt đầu</label>
+                    <input type="date" value={projectForm.start_date}
+                      onChange={e => setProjectForm({ ...projectForm, start_date: e.target.value })}
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Deadline</label>
+                    <input type="date" value={projectForm.deadline}
+                      onChange={e => setProjectForm({ ...projectForm, deadline: e.target.value })}
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Giá hợp đồng (USD)</label>
+                    <input type="number" min="0" value={projectForm.contract_price}
+                      onChange={e => setProjectForm({ ...projectForm, contract_price: e.target.value })}
+                      placeholder="VD: 3000"
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Đã thanh toán (USD)</label>
+                    <input type="number" min="0" value={projectForm.paid_amount}
+                      onChange={e => setProjectForm({ ...projectForm, paid_amount: e.target.value })}
+                      placeholder="0"
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Nhóm 3: Mô tả & Nghiệm thu */}
+              <div>
+                <h4 className="text-indigo-400 text-sm font-semibold mb-3 pb-2 border-b border-gray-800">Mô tả & Nghiệm thu</h4>
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Mô tả dự án</label>
+                    <textarea value={projectForm.description}
+                      onChange={e => setProjectForm({ ...projectForm, description: e.target.value })}
+                      rows={3} placeholder="Mô tả chi tiết dự án, mục tiêu, yêu cầu kỹ thuật..."
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 resize-none transition"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Tiêu chí nghiệm thu</label>
+                    <textarea value={projectForm.acceptance_criteria}
+                      onChange={e => setProjectForm({ ...projectForm, acceptance_criteria: e.target.value })}
+                      rows={3} placeholder="Các tiêu chí để đánh giá dự án hoàn thành..."
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 resize-none transition"
+                    />
+                  </div>
+                </div>
+              </div>
+
             </div>
-            <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-800">
+
+            <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-800 sticky bottom-0 bg-gray-900">
               <button onClick={() => setShowAddProject(false)} className="text-gray-400 border border-gray-700 px-5 py-2 rounded-lg text-sm hover:text-white transition">Hủy</button>
-              <button onClick={addProject} className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-5 py-2 rounded-lg text-sm transition">Thêm</button>
+              <button onClick={addProject} className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-5 py-2 rounded-lg text-sm transition">Lưu dự án</button>
             </div>
           </div>
         </div>
       )}
+      
 
       {/* ══ MODAL: Thêm nhân sự ══ */}
       {showAddStaff && (
