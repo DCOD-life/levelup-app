@@ -86,13 +86,13 @@ export default function LoginPage({ onLogin }) {
         {/* Flow diagram */}
         <div className="mt-6 flex items-center justify-center gap-2 flex-wrap">
           {[
-            { label: 'A Nhập', color: 'text-violet-400 border-violet-500/30 bg-violet-500/10' },
+            { label: 'Kỹ sư nhập', color: 'text-violet-400 border-violet-500/30 bg-violet-500/10' },
             { label: '⇄', color: 'text-gray-600', plain: true },
-            { label: 'B Duyệt', color: 'text-cyan-400 border-cyan-500/30 bg-cyan-500/10' },
+            { label: 'PO duyệt', color: 'text-cyan-400 border-cyan-500/30 bg-cyan-500/10' },
             { label: '→', color: 'text-gray-600', plain: true },
-            { label: 'C Chấm', color: 'text-orange-400 border-orange-500/30 bg-orange-500/10' },
+            { label: 'GĐ chấm', color: 'text-orange-400 border-orange-500/30 bg-orange-500/10' },
             { label: '⇄', color: 'text-gray-600', plain: true },
-            { label: 'A Duyệt', color: 'text-violet-400 border-violet-500/30 bg-violet-500/10' },
+            { label: 'Kỹ sư duyệt', color: 'text-violet-400 border-violet-500/30 bg-violet-500/10' },
             { label: '→', color: 'text-gray-600', plain: true },
             { label: '✓ Level', color: 'text-green-400 border-green-500/30 bg-green-500/10' },
           ].map((s, i) => s.plain

@@ -12,6 +12,31 @@ const SKILLS = [
 
 const TEAMS = ['Team Duy', 'Team Đức Anh', 'Team Khải', 'Team Linh']
 
+const ROLE_LABEL = {
+  director:   'Giám Đốc',
+  po:         'PO',
+  engineer:   'Kỹ Sư',
+  accountant: 'Kế Toán',
+}
+
+const ROLE_COLOR = {
+  director:   'bg-orange-500/10 text-orange-400',
+  po:         'bg-cyan-500/10 text-cyan-400',
+  engineer:   'bg-violet-500/10 text-violet-400',
+  accountant: 'bg-emerald-500/10 text-emerald-400',
+}
+
+const EMPTY_PROJECT = {
+  name: '', phase: 'Pha 1 - Phát triển', status: 'active', owner_id: '',
+  start_date: '', deadline: '', contract_price: '', paid_amount: '',
+  description: '', acceptance_criteria: ''
+}
+
+const EMPTY_PARTNER = {
+  name: '', phone: '', address: '', contact_person: '',
+  technology: 'FDM', avg_price: '', notes: ''
+}
+
 export default function CouncilPage({ user, onLogout }) {
   const [tab, setTab] = useState('queue')
 
@@ -21,6 +46,7 @@ export default function CouncilPage({ user, onLogout }) {
   const [engineers, setEngineers] = useState([])
   const [allUsers, setAllUsers] = useState([])
   const [projects, setProjects] = useState([])
+  const [partners, setPartners] = useState([])
   const [loading, setLoading] = useState(true)
 
   // Score modal
@@ -35,13 +61,15 @@ export default function CouncilPage({ user, onLogout }) {
   const [replyText, setReplyText] = useState('')
   const [replyLv, setReplyLv] = useState('')
 
-  // Project modal
-  const [showAddProject, setShowAddProject] = useState(false)
-  const [projectForm, setProjectForm] = useState({
-    name: '', phase: 'Pha 1 - Phát triển', status: 'active', owner_id: '',
-    start_date: '', deadline: '', contract_price: '', paid_amount: '',
-    description: '', acceptance_criteria: ''
-  })
+  // Project modal (dùng cho cả Thêm mới + Xem/Sửa)
+  const [projectModal, setProjectModal] = useState(null) // null | 'create' | {...project}
+  const [projectEditing, setProjectEditing] = useState(false)
+  const [projectForm, setProjectForm] = useState(EMPTY_PROJECT)
+
+  // Partner modal
+  const [partnerModal, setPartnerModal] = useState(null) // null | 'create' | {...partner}
+  const [partnerEditing, setPartnerEditing] = useState(false)
+  const [partnerForm, setPartnerForm] = useState(EMPTY_PARTNER)
 
   // Staff modal
   const [showAddStaff, setShowAddStaff] = useState(false)
@@ -66,6 +94,7 @@ export default function CouncilPage({ user, onLogout }) {
     const { data: recs } = await sb.from('records').select('*')
     const { data: projs } = await sb.from('projects').select('*, users!owner_id(name)').eq('status', 'active')
     const { data: allU } = await sb.from('users').select('*').order('name')
+    const { data: prts } = await sb.from('printing_partners').select('*, users!created_by(name)').order('created_at', { ascending: false })
 
     setQueue((q || []).map(r => ({
       ...r,
@@ -84,6 +113,7 @@ export default function CouncilPage({ user, onLogout }) {
 
     setProjects(projs || [])
     setAllUsers(allU || [])
+    setPartners(prts || [])
     setLoading(false)
   }
 
@@ -93,10 +123,7 @@ export default function CouncilPage({ user, onLogout }) {
     await sb.from('records').update({
       state: 'scored',
       scoring: {
-        skillScores: scores,
-        proposedLevel: proposedLv,
-        decision,
-        comment,
+        skillScores: scores, proposedLevel: proposedLv, decision, comment,
         scoredAt: new Date().toLocaleString('vi-VN'),
       },
       updated_at: new Date().toISOString(),
@@ -106,23 +133,17 @@ export default function CouncilPage({ user, onLogout }) {
     loadData()
   }
 
-  // ── Xác nhận level ──
   async function finalizeLevel(r) {
     if (!confirm(`Cập nhật level ${r.scoring?.proposedLevel} cho ${r.engName}?`)) return
     await sb.from('records').update({
       state: 'completed',
-      scoring: {
-        ...r.scoring,
-        finalLevel: r.scoring?.proposedLevel,
-        finalizedAt: new Date().toLocaleString('vi-VN'),
-      },
+      scoring: { ...r.scoring, finalLevel: r.scoring?.proposedLevel, finalizedAt: new Date().toLocaleString('vi-VN') },
       updated_at: new Date().toISOString(),
     }).eq('id', r.id)
     await sb.from('users').update({ current_level: parseFloat(r.scoring?.proposedLevel) }).eq('id', r.engId)
     loadData()
   }
 
-  // ── Phản hồi kháng cáo ──
   async function submitReply() {
     if (!replyText.trim()) { alert('Nhập phản hồi!'); return }
     const rec = replyModal
@@ -132,21 +153,44 @@ export default function CouncilPage({ user, onLogout }) {
     const updatedScoring = { ...rec.scoring }
     if (replyLv) updatedScoring.proposedLevel = replyLv
     await sb.from('records').update({
-      state: 'scored',
-      scoring: updatedScoring,
-      appeals: newAppeals,
+      state: 'scored', scoring: updatedScoring, appeals: newAppeals,
       updated_at: new Date().toISOString(),
     }).eq('id', rec.id)
     setReplyModal(null); setReplyText(''); setReplyLv('')
     loadData()
   }
 
-  // ── Thêm dự án ──
-  async function addProject() {
+  // ── Dự án: mở modal tạo mới ──
+  function openCreateProject() {
+    setProjectForm(EMPTY_PROJECT)
+    setProjectEditing(true)
+    setProjectModal('create')
+  }
+
+  // ── Dự án: mở modal xem ──
+  function openViewProject(p) {
+    setProjectForm({
+      name: p.name || '',
+      phase: p.phase || 'Pha 1 - Phát triển',
+      status: p.status || 'active',
+      owner_id: p.owner_id || '',
+      start_date: p.start_date || '',
+      deadline: p.deadline || '',
+      contract_price: p.contract_price || '',
+      paid_amount: p.paid_amount || '',
+      description: p.description || '',
+      acceptance_criteria: p.acceptance_criteria || '',
+    })
+    setProjectEditing(false)
+    setProjectModal(p)
+  }
+
+  // ── Dự án: lưu (tạo mới hoặc cập nhật) ──
+  async function saveProject() {
     if (!projectForm.name.trim()) { alert('Vui lòng nhập tên dự án!'); return }
     if (!projectForm.owner_id) { alert('Vui lòng chọn chủ dự án!'); return }
 
-    const { error } = await sb.from('projects').insert({
+    const payload = {
       name: projectForm.name,
       phase: projectForm.phase,
       status: projectForm.status,
@@ -157,53 +201,135 @@ export default function CouncilPage({ user, onLogout }) {
       paid_amount: parseFloat(projectForm.paid_amount) || 0,
       description: projectForm.description || null,
       acceptance_criteria: projectForm.acceptance_criteria || null,
-    })
-
-    if (error) {
-      alert('❌ Lỗi khi tạo dự án: ' + error.message)
-      return
     }
 
-    alert(`✅ Đã tạo dự án "${projectForm.name}" thành công!`)
-    setProjectForm({
-      name: '', phase: 'Pha 1 - Phát triển', status: 'active', owner_id: '',
-      start_date: '', deadline: '', contract_price: '', paid_amount: '',
-      description: '', acceptance_criteria: ''
-    })
-    setShowAddProject(false)
+    let error
+    if (projectModal === 'create') {
+      ({ error } = await sb.from('projects').insert(payload))
+    } else {
+      ({ error } = await sb.from('projects').update({
+        ...payload, updated_at: new Date().toISOString()
+      }).eq('id', projectModal.id))
+    }
+
+    if (error) { alert('❌ Lỗi: ' + error.message); return }
+
+    alert(projectModal === 'create'
+      ? `✅ Đã tạo dự án "${projectForm.name}"!`
+      : `✅ Đã cập nhật dự án!`)
+    setProjectModal(null)
+    setProjectEditing(false)
+    setProjectForm(EMPTY_PROJECT)
     loadData()
   }
 
-  // ── Thêm nhân sự ──
+  // ── Dự án: xóa ──
+  async function deleteProject() {
+    if (!confirm(`Xóa dự án "${projectModal.name}"? Hành động này không thể hoàn tác.`)) return
+    const { error } = await sb.from('projects').delete().eq('id', projectModal.id)
+    if (error) { alert('❌ Lỗi xóa: ' + error.message); return }
+    alert('✅ Đã xóa dự án!')
+    setProjectModal(null)
+    loadData()
+  }
+
+  // ── Đối tác: mở modal tạo mới ──
+  function openCreatePartner() {
+    setPartnerForm(EMPTY_PARTNER)
+    setPartnerEditing(true)
+    setPartnerModal('create')
+  }
+
+  // ── Đối tác: mở modal xem ──
+  function openViewPartner(p) {
+    setPartnerForm({
+      name: p.name || '',
+      phone: p.phone || '',
+      address: p.address || '',
+      contact_person: p.contact_person || '',
+      technology: p.technology || 'FDM',
+      avg_price: p.avg_price || '',
+      notes: p.notes || '',
+    })
+    setPartnerEditing(false)
+    setPartnerModal(p)
+  }
+
+  // ── Đối tác: lưu ──
+  async function savePartner() {
+    if (!partnerForm.name.trim()) { alert('Vui lòng nhập tên xưởng!'); return }
+
+    const payload = {
+      name: partnerForm.name,
+      phone: partnerForm.phone || null,
+      address: partnerForm.address || null,
+      contact_person: partnerForm.contact_person || null,
+      technology: partnerForm.technology || null,
+      avg_price: parseFloat(partnerForm.avg_price) || 0,
+      notes: partnerForm.notes || null,
+    }
+
+    let error
+    if (partnerModal === 'create') {
+      ({ error } = await sb.from('printing_partners').insert({ ...payload, created_by: user.id }))
+    } else {
+      ({ error } = await sb.from('printing_partners').update({
+        ...payload, updated_at: new Date().toISOString()
+      }).eq('id', partnerModal.id))
+    }
+
+    if (error) { alert('❌ Lỗi: ' + error.message); return }
+
+    alert(partnerModal === 'create'
+      ? `✅ Đã thêm đối tác "${partnerForm.name}"!`
+      : `✅ Đã cập nhật đối tác!`)
+    setPartnerModal(null)
+    setPartnerEditing(false)
+    setPartnerForm(EMPTY_PARTNER)
+    loadData()
+  }
+
+  // ── Đối tác: xóa ──
+  async function deletePartner() {
+    if (!confirm(`Xóa đối tác "${partnerModal.name}"? Hành động này không thể hoàn tác.`)) return
+    const { error } = await sb.from('printing_partners').delete().eq('id', partnerModal.id)
+    if (error) { alert('❌ Lỗi xóa: ' + error.message); return }
+    alert('✅ Đã xóa đối tác!')
+    setPartnerModal(null)
+    loadData()
+  }
+
+  // ── Nhân sự: giữ session ──
   async function addStaff() {
     if (!staffForm.name || !staffForm.email || !staffForm.password) {
       alert('Điền đầy đủ thông tin!'); return
     }
     try {
-      // Tạo tài khoản Auth
-      const { error: authError } = await sb.auth.signUp({
-        email: staffForm.email,
-        password: staffForm.password,
-      })
+      const { data: sessionData } = await sb.auth.getSession()
+      const currentSession = sessionData?.session
 
+      const { error: authError } = await sb.auth.signUp({
+        email: staffForm.email, password: staffForm.password,
+      })
       if (authError) { alert('❌ Lỗi tạo Auth: ' + authError.message); return }
 
-      // Thêm vào bảng users
       const { error: dbError } = await sb.from('users').insert({
-        name: staffForm.name,
-        email: staffForm.email,
-        password: staffForm.password,
-        role: staffForm.role,
-        team: staffForm.team || null,
-        current_level: 0,
+        name: staffForm.name, email: staffForm.email, password: staffForm.password,
+        role: staffForm.role, team: staffForm.team || null, current_level: 0,
       })
-
       if (dbError) {
-        alert(`⚠️ Đã tạo Auth nhưng không lưu được vào bảng users!\n\nLỗi: ${dbError.message}\n\nCode: ${dbError.code}`)
+        alert(`⚠️ Đã tạo Auth nhưng không lưu được!\nLỗi: ${dbError.message}\nCode: ${dbError.code}`)
         return
       }
 
-      alert(`✅ Đã thêm ${staffForm.name} thành công!\n\nTài khoản có thể đăng nhập ngay.`)
+      if (currentSession) {
+        await sb.auth.setSession({
+          access_token: currentSession.access_token,
+          refresh_token: currentSession.refresh_token,
+        })
+      }
+
+      alert(`✅ Đã thêm ${staffForm.name} thành công!`)
       setShowAddStaff(false)
       setStaffForm({ name: '', email: '', password: '', role: 'engineer', team: '' })
       loadData()
@@ -223,13 +349,16 @@ export default function CouncilPage({ user, onLogout }) {
     { id: 'appeals',   icon: '📢', label: 'Kháng cáo',     count: appeals.length },
     { id: 'dashboard', icon: '📊', label: 'Dashboard' },
     { id: 'projects',  icon: '🗂',  label: 'Dự án' },
+    { id: 'partners',  icon: '🏭', label: 'Đối tác in 3D' },
     { id: 'staff',     icon: '👥', label: 'Nhân sự' },
   ]
+
+  const isCreatingProject = projectModal === 'create'
+  const isCreatingPartner = partnerModal === 'create'
 
   return (
     <div className="min-h-screen bg-gray-950 flex">
 
-      {/* ── Sidebar ── */}
       <aside className="w-56 bg-gray-900 border-r border-gray-800 flex flex-col fixed h-full">
         <div className="p-5 border-b border-gray-800">
           <span className="text-white font-bold text-lg">◈ LevelUp</span>
@@ -249,10 +378,12 @@ export default function CouncilPage({ user, onLogout }) {
         </nav>
         <div className="p-4 border-t border-gray-800">
           <div className="flex items-center gap-3 mb-3">
-            <div className="w-9 h-9 rounded-lg bg-orange-500/20 text-orange-400 flex items-center justify-center font-bold text-sm">C</div>
+            <div className="w-9 h-9 rounded-lg bg-orange-500/20 text-orange-400 flex items-center justify-center font-bold text-sm">
+              {user.role === 'accountant' ? 'KT' : 'GĐ'}
+            </div>
             <div>
               <div className="text-white text-sm font-semibold">{user.name}</div>
-              <div className="text-gray-500 text-xs">Hội Đồng</div>
+              <div className="text-gray-500 text-xs">{ROLE_LABEL[user.role] || 'Giám Đốc'}</div>
             </div>
           </div>
           <button onClick={async () => { await sb.auth.signOut(); onLogout() }}
@@ -262,16 +393,14 @@ export default function CouncilPage({ user, onLogout }) {
         </div>
       </aside>
 
-      {/* ── Main ── */}
       <main className="ml-56 flex-1 p-8">
 
         {/* TAB: Hàng chờ chấm */}
         {tab === 'queue' && (
           <div>
             <h2 className="text-2xl font-bold text-white mb-2">Hàng chờ chấm điểm</h2>
-            <p className="text-gray-500 text-sm mb-6">Hồ sơ Lead đã duyệt — chấm điểm và gửi kết quả cho Kỹ Sư</p>
+            <p className="text-gray-500 text-sm mb-6">Hồ sơ PO đã duyệt — chấm điểm và gửi kết quả cho Kỹ Sư</p>
 
-            {/* Cần xác nhận level */}
             {queue.filter(r => r.state === 'accepted').map(r => (
               <div key={r.id} className="bg-gray-900 border border-green-500/30 rounded-xl p-5 mb-4">
                 <div className="flex items-center justify-between">
@@ -292,15 +421,12 @@ export default function CouncilPage({ user, onLogout }) {
               </div>
             ))}
 
-            {/* Chờ chấm */}
             {queue.filter(r => r.state === 'approved_b').map(r => (
               <div key={r.id} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mb-4 hover:border-gray-700 transition">
                 <div className="flex items-center justify-between px-5 py-4 bg-gray-800/50 border-b border-gray-800">
                   <div>
                     <span className="text-white font-bold">👨‍💻 {r.engName}</span>
-                    <span className="text-gray-500 text-sm ml-3">
-                      {r.engTeam} · Level hiện tại: {r.engLevel ?? 0}
-                    </span>
+                    <span className="text-gray-500 text-sm ml-3">{r.engTeam} · Level hiện tại: {r.engLevel ?? 0}</span>
                   </div>
                   <button onClick={() => {
                     setScoreModal(r)
@@ -422,19 +548,81 @@ export default function CouncilPage({ user, onLogout }) {
           <div>
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-2xl font-bold text-white">Quản lý dự án</h2>
-              <button onClick={() => setShowAddProject(true)}
+              <button onClick={openCreateProject}
                 className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition">
                 + Thêm dự án
               </button>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              {projects.map(p => (
-                <div key={p.id} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition">
-                  <div className="text-white font-bold mb-1">🗂 {p.name}</div>
-                  <div className="text-gray-500 text-sm">Chủ dự án: {p.users?.name || '?'}</div>
-                </div>
-              ))}
+            {!projects.length ? (
+              <div className="text-center py-16 text-gray-600">
+                <div className="text-5xl mb-3 opacity-40">🗂</div>
+                <p>Chưa có dự án nào</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-4">
+                {projects.map(p => (
+                  <button key={p.id} onClick={() => openViewProject(p)}
+                    className="text-left bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-indigo-500/50 hover:bg-gray-900/80 transition cursor-pointer">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-white font-bold">🗂 {p.name}</div>
+                      {p.phase && (
+                        <span className="text-xs bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded-full">{p.phase}</span>
+                      )}
+                    </div>
+                    <div className="text-gray-500 text-sm mb-2">Chủ dự án: {p.users?.name || '?'}</div>
+                    {(p.contract_price > 0 || p.paid_amount > 0) && (
+                      <div className="text-gray-400 text-xs">
+                        💰 {Number(p.paid_amount).toLocaleString()} / {Number(p.contract_price).toLocaleString()} USD
+                      </div>
+                    )}
+                    {p.deadline && (<div className="text-gray-400 text-xs mt-1">📅 Deadline: {p.deadline}</div>)}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB: Đối tác in 3D */}
+        {tab === 'partners' && (
+          <div>
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-2xl font-bold text-white">Đối tác in 3D</h2>
+                <p className="text-gray-500 text-sm mt-1">Danh sách xưởng in 3D liên kết</p>
+              </div>
+              <button onClick={openCreatePartner}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition">
+                + Thêm đối tác
+              </button>
             </div>
+
+            {!partners.length ? (
+              <div className="text-center py-16 text-gray-600">
+                <div className="text-5xl mb-3 opacity-40">🏭</div>
+                <p>Chưa có đối tác in 3D nào</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-4">
+                {partners.map(p => (
+                  <button key={p.id} onClick={() => openViewPartner(p)}
+                    className="text-left bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-indigo-500/50 hover:bg-gray-900/80 transition cursor-pointer">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="text-white font-bold">🏭 {p.name}</div>
+                      {p.technology && (
+                        <span className="text-xs bg-cyan-500/10 text-cyan-400 px-2 py-0.5 rounded-full">{p.technology}</span>
+                      )}
+                    </div>
+                    {p.contact_person && <div className="text-gray-400 text-sm mb-1">👤 {p.contact_person}</div>}
+                    {p.phone && <div className="text-gray-400 text-sm mb-1">📞 {p.phone}</div>}
+                    {p.address && <div className="text-gray-500 text-xs mb-2">📍 {p.address}</div>}
+                    {p.avg_price > 0 && (
+                      <div className="text-gray-400 text-xs">💰 Giá TB: {Number(p.avg_price).toLocaleString()} USD</div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -456,7 +644,7 @@ export default function CouncilPage({ user, onLogout }) {
               <table className="w-full">
                 <thead>
                   <tr className="bg-gray-800/50 border-b border-gray-800">
-                    {['Họ tên', 'Email', 'Team', 'Vai trò', 'Level'].map(h => (
+                    {['Họ tên', 'Email', 'Team', 'Vị trí', 'Level'].map(h => (
                       <th key={h} className="text-left px-5 py-3 text-gray-400 text-xs font-semibold uppercase tracking-wider">{h}</th>
                     ))}
                   </tr>
@@ -468,12 +656,8 @@ export default function CouncilPage({ user, onLogout }) {
                       <td className="px-5 py-3 text-gray-400 text-sm">{u.email}</td>
                       <td className="px-5 py-3 text-gray-400 text-sm">{u.team || '—'}</td>
                       <td className="px-5 py-3">
-                        <span className={`text-xs font-semibold px-2 py-1 rounded-full ${
-                          u.role === 'engineer' ? 'bg-violet-500/10 text-violet-400' :
-                          u.role === 'lead'     ? 'bg-cyan-500/10 text-cyan-400' :
-                                                  'bg-orange-500/10 text-orange-400'
-                        }`}>
-                          {u.role === 'engineer' ? 'Kỹ Sư' : u.role === 'lead' ? 'Lead' : 'Hội Đồng'}
+                        <span className={`text-xs font-semibold px-2 py-1 rounded-full ${ROLE_COLOR[u.role] || 'bg-gray-800 text-gray-400'}`}>
+                          {ROLE_LABEL[u.role] || u.role}
                         </span>
                       </td>
                       <td className="px-5 py-3 text-white font-mono text-sm">{u.current_level ?? '—'}</td>
@@ -563,7 +747,7 @@ export default function CouncilPage({ user, onLogout }) {
                   <div key={i} className="bg-gray-800 rounded-lg p-3">
                     <div className="flex items-center justify-between mb-1">
                       <span className={`text-xs font-semibold ${a.from === 'A' ? 'text-violet-400' : 'text-orange-400'}`}>
-                        {a.from === 'A' ? '👨‍💻 Kỹ Sư' : '🏛 Hội Đồng'} — Vòng {a.round}
+                        {a.from === 'A' ? '👨‍💻 Kỹ Sư' : '🏛 Giám Đốc'} — Vòng {a.round}
                       </span>
                       <span className="text-gray-600 text-xs">{a.at}</span>
                     </div>
@@ -579,7 +763,7 @@ export default function CouncilPage({ user, onLogout }) {
                 />
               </div>
               <div>
-                <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Phản hồi của Hội Đồng</label>
+                <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Phản hồi của Giám Đốc</label>
                 <textarea value={replyText} onChange={e => setReplyText(e.target.value)}
                   rows={3} placeholder="Giải thích lý do hoặc ghi nhận điều chỉnh..."
                   className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 resize-none transition"
@@ -594,44 +778,47 @@ export default function CouncilPage({ user, onLogout }) {
         </div>
       )}
 
-      {/* ══ MODAL: Thêm dự án ══ */}
-      {/* ══ MODAL: Thêm dự án ══ */}
-      {showAddProject && (
+      {/* ══ MODAL: Dự án (Xem / Sửa / Tạo mới) ══ */}
+      {projectModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto shadow-2xl">
             <div className="flex items-center justify-between px-6 py-5 border-b border-gray-800 sticky top-0 bg-gray-900 z-10">
-              <h3 className="text-white font-bold text-lg">Tạo dự án mới</h3>
-              <button onClick={() => setShowAddProject(false)} className="text-gray-500 hover:text-white w-8 h-8 flex items-center justify-center rounded-lg border border-gray-700 transition">✕</button>
+              <h3 className="text-white font-bold text-lg">
+                {isCreatingProject ? 'Tạo dự án mới'
+                  : projectEditing ? `Chỉnh sửa: ${projectModal.name}`
+                  : `📋 ${projectModal.name}`}
+              </h3>
+              <button onClick={() => { setProjectModal(null); setProjectEditing(false) }}
+                className="text-gray-500 hover:text-white w-8 h-8 flex items-center justify-center rounded-lg border border-gray-700 transition">✕</button>
             </div>
 
             <div className="px-6 py-5 space-y-6">
 
-              {/* Nhóm 1: Thông tin cơ bản */}
               <div>
                 <h4 className="text-indigo-400 text-sm font-semibold mb-3 pb-2 border-b border-gray-800">Thông tin cơ bản</h4>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="col-span-2">
-                    <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Tên dự án <span className="text-red-400">*</span></label>
-                    <input value={projectForm.name}
+                    <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Tên dự án{(isCreatingProject || projectEditing) && <span className="text-red-400"> *</span>}</label>
+                    <input value={projectForm.name} disabled={!isCreatingProject && !projectEditing}
                       onChange={e => setProjectForm({ ...projectForm, name: e.target.value })}
                       placeholder="VD: Ring Cleaner — Pha 1"
-                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70"
                     />
                   </div>
                   <div>
                     <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Loại pha</label>
-                    <select value={projectForm.phase}
+                    <select value={projectForm.phase} disabled={!isCreatingProject && !projectEditing}
                       onChange={e => setProjectForm({ ...projectForm, phase: e.target.value })}
-                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition">
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70">
                       <option value="Pha 1 - Phát triển">Pha 1 — Phát triển</option>
                       <option value="Pha 2 - Sản xuất">Pha 2 — Sản xuất</option>
                     </select>
                   </div>
                   <div>
                     <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Trạng thái</label>
-                    <select value={projectForm.status}
+                    <select value={projectForm.status} disabled={!isCreatingProject && !projectEditing}
                       onChange={e => setProjectForm({ ...projectForm, status: e.target.value })}
-                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition">
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70">
                       <option value="active">Đang thực hiện</option>
                       <option value="paused">Tạm dừng</option>
                       <option value="completed">Hoàn thành</option>
@@ -640,13 +827,13 @@ export default function CouncilPage({ user, onLogout }) {
                   </div>
                   <div className="col-span-2">
                     <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Chủ dự án</label>
-                    <select value={projectForm.owner_id}
+                    <select value={projectForm.owner_id} disabled={!isCreatingProject && !projectEditing}
                       onChange={e => setProjectForm({ ...projectForm, owner_id: e.target.value })}
-                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition">
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70">
                       <option value="">— Chọn chủ dự án —</option>
-                      {allUsers.filter(u => u.role === 'council' || u.role === 'lead').map(u => (
+                      {allUsers.filter(u => u.role === 'director' || u.role === 'po').map(u => (
                         <option key={u.id} value={u.id}>
-                          {u.name} ({u.role === 'council' ? 'Hội Đồng' : 'Lead'}{u.team ? ' · ' + u.team : ''})
+                          {u.name} ({ROLE_LABEL[u.role]}{u.team ? ' · ' + u.team : ''})
                         </option>
                       ))}
                     </select>
@@ -654,61 +841,59 @@ export default function CouncilPage({ user, onLogout }) {
                 </div>
               </div>
 
-              {/* Nhóm 2: Thời gian & Tài chính */}
               <div>
                 <h4 className="text-indigo-400 text-sm font-semibold mb-3 pb-2 border-b border-gray-800">Thời gian & Tài chính</h4>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Ngày bắt đầu</label>
-                    <input type="date" value={projectForm.start_date}
+                    <input type="date" value={projectForm.start_date} disabled={!isCreatingProject && !projectEditing}
                       onChange={e => setProjectForm({ ...projectForm, start_date: e.target.value })}
-                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70"
                     />
                   </div>
                   <div>
                     <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Deadline</label>
-                    <input type="date" value={projectForm.deadline}
+                    <input type="date" value={projectForm.deadline} disabled={!isCreatingProject && !projectEditing}
                       onChange={e => setProjectForm({ ...projectForm, deadline: e.target.value })}
-                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70"
                     />
                   </div>
                   <div>
                     <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Giá hợp đồng (USD)</label>
-                    <input type="number" min="0" value={projectForm.contract_price}
+                    <input type="number" min="0" value={projectForm.contract_price} disabled={!isCreatingProject && !projectEditing}
                       onChange={e => setProjectForm({ ...projectForm, contract_price: e.target.value })}
                       placeholder="VD: 3000"
-                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70"
                     />
                   </div>
                   <div>
                     <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Đã thanh toán (USD)</label>
-                    <input type="number" min="0" value={projectForm.paid_amount}
+                    <input type="number" min="0" value={projectForm.paid_amount} disabled={!isCreatingProject && !projectEditing}
                       onChange={e => setProjectForm({ ...projectForm, paid_amount: e.target.value })}
                       placeholder="0"
-                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70"
                     />
                   </div>
                 </div>
               </div>
 
-              {/* Nhóm 3: Mô tả & Nghiệm thu */}
               <div>
                 <h4 className="text-indigo-400 text-sm font-semibold mb-3 pb-2 border-b border-gray-800">Mô tả & Nghiệm thu</h4>
                 <div className="space-y-4">
                   <div>
                     <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Mô tả dự án</label>
-                    <textarea value={projectForm.description}
+                    <textarea value={projectForm.description} disabled={!isCreatingProject && !projectEditing}
                       onChange={e => setProjectForm({ ...projectForm, description: e.target.value })}
                       rows={3} placeholder="Mô tả chi tiết dự án, mục tiêu, yêu cầu kỹ thuật..."
-                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 resize-none transition"
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 resize-none transition disabled:opacity-70"
                     />
                   </div>
                   <div>
                     <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Tiêu chí nghiệm thu</label>
-                    <textarea value={projectForm.acceptance_criteria}
+                    <textarea value={projectForm.acceptance_criteria} disabled={!isCreatingProject && !projectEditing}
                       onChange={e => setProjectForm({ ...projectForm, acceptance_criteria: e.target.value })}
                       rows={3} placeholder="Các tiêu chí để đánh giá dự án hoàn thành..."
-                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 resize-none transition"
+                      className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 resize-none transition disabled:opacity-70"
                     />
                   </div>
                 </div>
@@ -716,14 +901,158 @@ export default function CouncilPage({ user, onLogout }) {
 
             </div>
 
-            <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-800 sticky bottom-0 bg-gray-900">
-              <button onClick={() => setShowAddProject(false)} className="text-gray-400 border border-gray-700 px-5 py-2 rounded-lg text-sm hover:text-white transition">Hủy</button>
-              <button onClick={addProject} className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-5 py-2 rounded-lg text-sm transition">Lưu dự án</button>
+            <div className="flex justify-between items-center gap-3 px-6 py-4 border-t border-gray-800 sticky bottom-0 bg-gray-900">
+              <div>
+                {/* Nút xóa chỉ hiện khi đang xem và user là Giám Đốc */}
+                {!isCreatingProject && !projectEditing && user.role === 'director' && (
+                  <button onClick={deleteProject}
+                    className="bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 px-4 py-2 rounded-lg text-sm font-semibold transition">
+                    🗑 Xóa dự án
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-3">
+                <button onClick={() => { setProjectModal(null); setProjectEditing(false) }}
+                  className="text-gray-400 border border-gray-700 px-5 py-2 rounded-lg text-sm hover:text-white transition">
+                  {(isCreatingProject || projectEditing) ? 'Hủy' : 'Đóng'}
+                </button>
+                {/* Nút Chỉnh sửa chỉ hiện khi đang xem */}
+                {!isCreatingProject && !projectEditing && user.role === 'director' && (
+                  <button onClick={() => setProjectEditing(true)}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-5 py-2 rounded-lg text-sm transition">
+                    ✏️ Chỉnh sửa
+                  </button>
+                )}
+                {/* Nút Lưu khi tạo hoặc chỉnh sửa */}
+                {(isCreatingProject || projectEditing) && (
+                  <button onClick={saveProject}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-5 py-2 rounded-lg text-sm transition">
+                    {isCreatingProject ? 'Lưu dự án' : 'Lưu thay đổi'}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
       )}
-      
+
+      {/* ══ MODAL: Đối tác in 3D (Xem / Sửa / Tạo mới) ══ */}
+      {partnerModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-5 border-b border-gray-800 sticky top-0 bg-gray-900 z-10">
+              <h3 className="text-white font-bold text-lg">
+                {isCreatingPartner ? 'Thêm đối tác in 3D'
+                  : partnerEditing ? `Chỉnh sửa: ${partnerModal.name}`
+                  : `🏭 ${partnerModal.name}`}
+              </h3>
+              <button onClick={() => { setPartnerModal(null); setPartnerEditing(false) }}
+                className="text-gray-500 hover:text-white w-8 h-8 flex items-center justify-center rounded-lg border border-gray-700 transition">✕</button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <div>
+                <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Tên xưởng{(isCreatingPartner || partnerEditing) && <span className="text-red-400"> *</span>}</label>
+                <input value={partnerForm.name} disabled={!isCreatingPartner && !partnerEditing}
+                  onChange={e => setPartnerForm({ ...partnerForm, name: e.target.value })}
+                  placeholder="VD: Xưởng 3D ABC"
+                  className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Số điện thoại</label>
+                  <input value={partnerForm.phone} disabled={!isCreatingPartner && !partnerEditing}
+                    onChange={e => setPartnerForm({ ...partnerForm, phone: e.target.value })}
+                    placeholder="0912 345 678"
+                    className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70"
+                  />
+                </div>
+                <div>
+                  <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Người liên hệ</label>
+                  <input value={partnerForm.contact_person} disabled={!isCreatingPartner && !partnerEditing}
+                    onChange={e => setPartnerForm({ ...partnerForm, contact_person: e.target.value })}
+                    placeholder="VD: Anh Tuấn"
+                    className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Địa chỉ</label>
+                <input value={partnerForm.address} disabled={!isCreatingPartner && !partnerEditing}
+                  onChange={e => setPartnerForm({ ...partnerForm, address: e.target.value })}
+                  placeholder="VD: 123 Nguyễn Trãi, Thanh Xuân, Hà Nội"
+                  className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Công nghệ</label>
+                  <select value={partnerForm.technology} disabled={!isCreatingPartner && !partnerEditing}
+                    onChange={e => setPartnerForm({ ...partnerForm, technology: e.target.value })}
+                    className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70">
+                    <option value="FDM">FDM</option>
+                    <option value="SLA">SLA</option>
+                    <option value="SLS">SLS</option>
+                    <option value="DLP">DLP</option>
+                    <option value="MJF">MJF</option>
+                    <option value="Mixed">Nhiều công nghệ</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Giá TB (USD)</label>
+                  <input type="number" min="0" value={partnerForm.avg_price} disabled={!isCreatingPartner && !partnerEditing}
+                    onChange={e => setPartnerForm({ ...partnerForm, avg_price: e.target.value })}
+                    placeholder="VD: 50"
+                    className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Ghi chú</label>
+                <textarea value={partnerForm.notes} disabled={!isCreatingPartner && !partnerEditing}
+                  onChange={e => setPartnerForm({ ...partnerForm, notes: e.target.value })}
+                  rows={3} placeholder="Đánh giá chất lượng, thời gian giao hàng, điều kiện hợp tác..."
+                  className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 resize-none transition disabled:opacity-70"
+                />
+              </div>
+              {/* Info tạo bởi ai - chỉ hiện khi xem */}
+              {!isCreatingPartner && !partnerEditing && partnerModal.users?.name && (
+                <div className="text-gray-500 text-xs italic">
+                  Tạo bởi: {partnerModal.users.name}
+                </div>
+              )}
+            </div>
+            <div className="flex justify-between items-center gap-3 px-6 py-4 border-t border-gray-800 sticky bottom-0 bg-gray-900">
+              <div>
+                {!isCreatingPartner && !partnerEditing && user.role === 'director' && (
+                  <button onClick={deletePartner}
+                    className="bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 px-4 py-2 rounded-lg text-sm font-semibold transition">
+                    🗑 Xóa đối tác
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-3">
+                <button onClick={() => { setPartnerModal(null); setPartnerEditing(false) }}
+                  className="text-gray-400 border border-gray-700 px-5 py-2 rounded-lg text-sm hover:text-white transition">
+                  {(isCreatingPartner || partnerEditing) ? 'Hủy' : 'Đóng'}
+                </button>
+                {!isCreatingPartner && !partnerEditing && user.role === 'director' && (
+                  <button onClick={() => setPartnerEditing(true)}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-5 py-2 rounded-lg text-sm transition">
+                    ✏️ Chỉnh sửa
+                  </button>
+                )}
+                {(isCreatingPartner || partnerEditing) && (
+                  <button onClick={savePartner}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-5 py-2 rounded-lg text-sm transition">
+                    {isCreatingPartner ? 'Thêm đối tác' : 'Lưu thay đổi'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ══ MODAL: Thêm nhân sự ══ */}
       {showAddStaff && (
@@ -736,42 +1065,38 @@ export default function CouncilPage({ user, onLogout }) {
             <div className="px-6 py-5 space-y-4">
               <div>
                 <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Họ và tên</label>
-                <input value={staffForm.name}
-                  onChange={e => setStaffForm({ ...staffForm, name: e.target.value })}
+                <input value={staffForm.name} onChange={e => setStaffForm({ ...staffForm, name: e.target.value })}
                   placeholder="VD: Nguyễn Văn A"
                   className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
                 />
               </div>
               <div>
                 <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Email</label>
-                <input type="email" value={staffForm.email}
-                  onChange={e => setStaffForm({ ...staffForm, email: e.target.value })}
+                <input type="email" value={staffForm.email} onChange={e => setStaffForm({ ...staffForm, email: e.target.value })}
                   placeholder="email@gmail.com"
                   className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
                 />
               </div>
               <div>
                 <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Mật khẩu</label>
-                <input type="text" value={staffForm.password}
-                  onChange={e => setStaffForm({ ...staffForm, password: e.target.value })}
+                <input type="text" value={staffForm.password} onChange={e => setStaffForm({ ...staffForm, password: e.target.value })}
                   placeholder="VD: TenNguoi@123"
                   className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
                 />
               </div>
               <div>
-                <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Vai trò</label>
-                <select value={staffForm.role}
-                  onChange={e => setStaffForm({ ...staffForm, role: e.target.value })}
+                <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Vị trí</label>
+                <select value={staffForm.role} onChange={e => setStaffForm({ ...staffForm, role: e.target.value })}
                   className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition">
                   <option value="engineer">Kỹ Sư</option>
-                  <option value="lead">Lead</option>
-                  <option value="council">Hội Đồng</option>
+                  <option value="po">PO</option>
+                  <option value="director">Giám Đốc</option>
+                  <option value="accountant">Kế Toán</option>
                 </select>
               </div>
               <div>
                 <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Team</label>
-                <select value={staffForm.team}
-                  onChange={e => setStaffForm({ ...staffForm, team: e.target.value })}
+                <select value={staffForm.team} onChange={e => setStaffForm({ ...staffForm, team: e.target.value })}
                   className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition">
                   <option value="">— Chọn team —</option>
                   {TEAMS.map(t => <option key={t} value={t}>{t}</option>)}

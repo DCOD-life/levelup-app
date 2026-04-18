@@ -39,7 +39,8 @@ export default function App() {
 
   if (!user) return <LoginPage onLogin={setUser} />
 
-  if (user.role === 'engineer') return <EngineerPage user={user} onLogout={() => setUser(null)} />
-  if (user.role === 'lead')     return <LeadPage user={user} onLogout={() => setUser(null)} />
-  if (user.role === 'council')  return <CouncilPage user={user} onLogout={() => setUser(null)} />
+  if (user.role === 'engineer')   return <EngineerPage user={user} onLogout={() => setUser(null)} />
+  if (user.role === 'po')         return <LeadPage user={user} onLogout={() => setUser(null)} />
+  if (user.role === 'director')   return <CouncilPage user={user} onLogout={() => setUser(null)} />
+  if (user.role === 'accountant') return <CouncilPage user={user} onLogout={() => setUser(null)} />
 }
