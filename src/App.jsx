@@ -4,6 +4,7 @@ import LoginPage from './pages/LoginPage'
 import EngineerPage from './pages/EngineerPage'
 import LeadPage from './pages/LeadPage'
 import CouncilPage from './pages/CouncilPage'
+import PartnerPage from './pages/PartnerPage'
 
 export default function App() {
   const [user, setUser] = useState(null)
@@ -43,4 +44,5 @@ export default function App() {
   if (user.role === 'po')         return <LeadPage user={user} onLogout={() => setUser(null)} />
   if (user.role === 'director')   return <CouncilPage user={user} onLogout={() => setUser(null)} />
   if (user.role === 'accountant') return <CouncilPage user={user} onLogout={() => setUser(null)} />
+  if (user.role === 'partner')    return <PartnerPage user={user} onLogout={() => setUser(null)} />
 }
