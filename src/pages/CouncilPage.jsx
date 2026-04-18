@@ -40,13 +40,11 @@ const EMPTY_PARTNER = {
   email: '', password: '', create_account: false,
 }
 
-// Hàm dùng chung để tạo acc partner (giữ session người đang đăng nhập)
-async function createPartnerAccount({ email, password, name, partnerId }) {
-  // Lưu session hiện tại
+// Hàm tạo acc (giữ session người đang đăng nhập)
+async function createUserAccount({ email, password, name, role, team = null }) {
   const { data: sessionData } = await sb.auth.getSession()
   const currentSession = sessionData?.session
 
-  // 1. Tạo Auth
   const { error: authError } = await sb.auth.signUp({ email, password })
   if (authError) {
     if (currentSession) {
@@ -58,10 +56,9 @@ async function createPartnerAccount({ email, password, name, partnerId }) {
     return { error: 'Lỗi Auth: ' + authError.message }
   }
 
-  // 2. Thêm vào users
   const { data: newUser, error: dbError } = await sb.from('users').insert({
-    name, email, password,
-    role: 'partner', current_level: 0,
+    name, email: email.toLowerCase(), password, role,
+    team, current_level: 0,
   }).select().single()
 
   if (dbError) {
@@ -74,10 +71,6 @@ async function createPartnerAccount({ email, password, name, partnerId }) {
     return { error: 'Lỗi DB: ' + dbError.message }
   }
 
-  // 3. Link user_id vào printing_partners
-  await sb.from('printing_partners').update({ user_id: newUser.id }).eq('id', partnerId)
-
-  // 4. Khôi phục session người quản lý
   if (currentSession) {
     await sb.auth.setSession({
       access_token: currentSession.access_token,
@@ -85,7 +78,7 @@ async function createPartnerAccount({ email, password, name, partnerId }) {
     })
   }
 
-  return { success: true }
+  return { success: true, user: newUser }
 }
 
 export default function CouncilPage({ user, onLogout }) {
@@ -97,6 +90,7 @@ export default function CouncilPage({ user, onLogout }) {
   const [allUsers, setAllUsers] = useState([])
   const [projects, setProjects] = useState([])
   const [partners, setPartners] = useState([])
+  const [pendingRequests, setPendingRequests] = useState([])
   const [loading, setLoading] = useState(true)
 
   const [scoreModal, setScoreModal] = useState(null)
@@ -122,6 +116,11 @@ export default function CouncilPage({ user, onLogout }) {
     name: '', email: '', password: '', role: 'engineer', team: ''
   })
 
+  // Review modal
+  const [reviewModal, setReviewModal] = useState(null)
+  const [reviewNote, setReviewNote] = useState('')
+  const [reviewAction, setReviewAction] = useState('') // 'approve' | 'reject'
+
   useEffect(() => { loadData() }, [])
 
   async function loadData() {
@@ -141,9 +140,13 @@ export default function CouncilPage({ user, onLogout }) {
     const { data: allU } = await sb.from('users').select('*').order('name')
     const { data: prts } = await sb.from('printing_partners').select('*, users!created_by(name)').order('created_at', { ascending: false })
 
+    // Lấy pending requests
+    const { data: reqs } = await sb.from('pending_requests')
+      .select('*, requester:requested_by(name, team)')
+      .order('created_at', { ascending: false })
+
     setQueue((q || []).map(r => ({
-      ...r,
-      engName: r.users?.name, engTeam: r.users?.team,
+      ...r, engName: r.users?.name, engTeam: r.users?.team,
       engLevel: r.users?.current_level, engId: r.users?.id,
     })))
     setAppeals((a || []).map(r => ({ ...r, engName: r.users?.name })))
@@ -154,6 +157,7 @@ export default function CouncilPage({ user, onLogout }) {
     setProjects(projs || [])
     setAllUsers(allU || [])
     setPartners(prts || [])
+    setPendingRequests(reqs || [])
     setLoading(false)
   }
 
@@ -279,7 +283,6 @@ export default function CouncilPage({ user, onLogout }) {
 
     const isCreating = partnerModal === 'create'
 
-    // Nếu bật tạo acc: validate
     if (isCreating && partnerForm.create_account) {
       if (!partnerForm.email.trim()) { alert('Vui lòng nhập email đăng nhập!'); return }
       if (!partnerForm.password.trim() || partnerForm.password.length < 6) {
@@ -312,18 +315,18 @@ export default function CouncilPage({ user, onLogout }) {
 
     if (error) { alert('❌ Lỗi: ' + error.message); return }
 
-    // Tạo account nếu tạo mới + có tick
     if (isCreating && partnerForm.create_account && newPartner) {
-      const result = await createPartnerAccount({
-        email: partnerForm.email,
+      const result = await createUserAccount({
+        email: partnerForm.email.toLowerCase(),
         password: partnerForm.password,
         name: partnerForm.name,
-        partnerId: newPartner.id,
+        role: 'partner',
       })
       if (result.error) {
         alert(`⚠️ Đã tạo đối tác nhưng tạo acc thất bại!\n${result.error}`)
       } else {
-        alert(`✅ Đã tạo đối tác "${partnerForm.name}" + tài khoản đăng nhập!\n\nĐối tác có thể đăng nhập bằng:\nEmail: ${partnerForm.email}\nMật khẩu: ${partnerForm.password}`)
+        await sb.from('printing_partners').update({ user_id: result.user.id }).eq('id', newPartner.id)
+        alert(`✅ Đã tạo đối tác + tài khoản!\n\nEmail: ${partnerForm.email.toLowerCase()}\nMật khẩu: ${partnerForm.password}`)
       }
     } else {
       alert(isCreating ? `✅ Đã thêm đối tác!` : `✅ Đã cập nhật!`)
@@ -343,48 +346,135 @@ export default function CouncilPage({ user, onLogout }) {
     loadData()
   }
 
+  // GĐ tự thêm nhân sự (không qua duyệt)
   async function addStaff() {
     if (!staffForm.name || !staffForm.email || !staffForm.password) {
       alert('Điền đầy đủ thông tin!'); return
     }
-    try {
-      const { data: sessionData } = await sb.auth.getSession()
-      const currentSession = sessionData?.session
 
-      const { error: authError } = await sb.auth.signUp({
-        email: staffForm.email, password: staffForm.password,
-      })
-      if (authError) { alert('❌ Lỗi tạo Auth: ' + authError.message); return }
+    const result = await createUserAccount({
+      email: staffForm.email.toLowerCase(),
+      password: staffForm.password,
+      name: staffForm.name,
+      role: staffForm.role,
+      team: staffForm.team || null,
+    })
 
-      const { error: dbError } = await sb.from('users').insert({
-        name: staffForm.name, email: staffForm.email, password: staffForm.password,
-        role: staffForm.role, team: staffForm.team || null, current_level: 0,
-      })
-      if (dbError) { alert(`⚠️ Lỗi DB: ${dbError.message}`); return }
+    if (result.error) { alert('❌ ' + result.error); return }
 
-      if (currentSession) {
-        await sb.auth.setSession({
-          access_token: currentSession.access_token,
-          refresh_token: currentSession.refresh_token,
-        })
+    alert(`✅ Đã thêm ${staffForm.name}!`)
+    setShowAddStaff(false)
+    setStaffForm({ name: '', email: '', password: '', role: 'engineer', team: '' })
+    loadData()
+  }
+
+  // ── Mở modal review yêu cầu ──
+  function openReview(req, action) {
+    setReviewModal(req)
+    setReviewAction(action)
+    setReviewNote('')
+  }
+
+  // ── Duyệt / Từ chối yêu cầu ──
+  async function submitReview() {
+    const req = reviewModal
+
+    if (reviewAction === 'reject') {
+      if (!reviewNote.trim()) {
+        alert('Vui lòng nhập lý do từ chối!'); return
       }
 
-      alert(`✅ Đã thêm ${staffForm.name}!`)
-      setShowAddStaff(false)
-      setStaffForm({ name: '', email: '', password: '', role: 'engineer', team: '' })
+      await sb.from('pending_requests').update({
+        status: 'rejected',
+        reviewed_by: user.id,
+        reviewed_at: new Date().toISOString(),
+        review_note: reviewNote,
+      }).eq('id', req.id)
+
+      alert('✅ Đã từ chối yêu cầu')
+      setReviewModal(null)
+      setReviewAction('')
       loadData()
-    } catch (e) {
-      alert('Lỗi: ' + e.message)
+      return
     }
+
+    // Duyệt — thực thi theo type
+    if (req.type === 'staff') {
+      const p = req.payload
+      const result = await createUserAccount({
+        email: p.email.toLowerCase(),
+        password: p.password,
+        name: p.name,
+        role: p.role,
+        team: p.team || null,
+      })
+
+      if (result.error) {
+        alert(`⚠️ Lỗi khi tạo nhân sự: ${result.error}\n\nYêu cầu chưa được duyệt.`)
+        return
+      }
+    } else if (req.type === 'partner') {
+      const p = req.payload
+
+      // 1. Tạo đối tác
+      const { data: newPartner, error: pErr } = await sb.from('printing_partners')
+        .insert({
+          name: p.name,
+          phone: p.phone || null,
+          address: p.address || null,
+          contact_person: p.contact_person || null,
+          technology: p.technology || null,
+          avg_price: parseFloat(p.avg_price) || 0,
+          notes: p.notes || null,
+          created_by: req.requested_by,
+        })
+        .select().single()
+
+      if (pErr) { alert('❌ Lỗi tạo đối tác: ' + pErr.message); return }
+
+      // 2. Nếu có yêu cầu tạo acc → tạo
+      if (p.create_account && p.email && p.password) {
+        const result = await createUserAccount({
+          email: p.email.toLowerCase(),
+          password: p.password,
+          name: p.name,
+          role: 'partner',
+        })
+
+        if (result.error) {
+          alert(`⚠️ Đã tạo đối tác nhưng lỗi tạo acc: ${result.error}`)
+        } else {
+          await sb.from('printing_partners').update({ user_id: result.user.id }).eq('id', newPartner.id)
+        }
+      }
+    }
+
+    // Update status
+    await sb.from('pending_requests').update({
+      status: 'approved',
+      reviewed_by: user.id,
+      reviewed_at: new Date().toISOString(),
+      review_note: reviewNote || null,
+    }).eq('id', req.id)
+
+    alert('✅ Đã duyệt yêu cầu!')
+    setReviewModal(null)
+    setReviewAction('')
+    loadData()
   }
 
   if (loading) return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center text-white">Đang tải...</div>
   )
 
+  const pendingCount = pendingRequests.filter(r => r.status === 'pending').length
+  const pendingList = pendingRequests.filter(r => r.status === 'pending')
+  const reviewedList = pendingRequests.filter(r => r.status !== 'pending')
+
   const TABS = [
     { id: 'queue',     icon: '⚖️', label: 'Hàng chờ chấm', count: queue.length },
     { id: 'appeals',   icon: '📢', label: 'Kháng cáo',     count: appeals.length },
+    { id: 'approvals', icon: '🔔', label: 'Chờ duyệt',     count: pendingCount },
     { id: 'dashboard', icon: '📊', label: 'Dashboard' },
     { id: 'projects',  icon: '🗂',  label: 'Dự án' },
     { id: 'partners',  icon: '🏭', label: 'Đối tác in 3D' },
@@ -397,7 +487,6 @@ export default function CouncilPage({ user, onLogout }) {
 
   return (
     <div className="min-h-screen bg-gray-950 flex">
-
       <aside className="w-56 bg-gray-900 border-r border-gray-800 flex flex-col fixed h-full">
         <div className="p-5 border-b border-gray-800">
           <span className="text-white font-bold text-lg">◈ LevelUp</span>
@@ -442,13 +531,9 @@ export default function CouncilPage({ user, onLogout }) {
                 <div className="flex items-center justify-between">
                   <div>
                     <span className="text-white font-bold">👨‍💻 {r.engName}</span>
-                    <span className="ml-3 text-xs bg-green-500/10 text-green-400 border border-green-500/30 px-2 py-0.5 rounded-full">
-                      Đã đồng ý kết quả
-                    </span>
+                    <span className="ml-3 text-xs bg-green-500/10 text-green-400 border border-green-500/30 px-2 py-0.5 rounded-full">Đã đồng ý kết quả</span>
                   </div>
-                  <span className="text-gray-400 text-sm">
-                    Level đề xuất: <strong className="text-white">{r.scoring?.proposedLevel}</strong>
-                  </span>
+                  <span className="text-gray-400 text-sm">Level đề xuất: <strong className="text-white">{r.scoring?.proposedLevel}</strong></span>
                 </div>
                 <button onClick={() => finalizeLevel(r)}
                   className="mt-4 bg-green-600 hover:bg-green-500 text-white font-semibold px-5 py-2 rounded-lg text-sm transition">
@@ -464,9 +549,8 @@ export default function CouncilPage({ user, onLogout }) {
                     <span className="text-white font-bold">👨‍💻 {r.engName}</span>
                     <span className="text-gray-500 text-sm ml-3">{r.engTeam} · Level hiện tại: {r.engLevel ?? 0}</span>
                   </div>
-                  <button onClick={() => {
-                    setScoreModal(r); setScores({}); setProposedLv(''); setDecision(''); setComment('')
-                  }} className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition">
+                  <button onClick={() => { setScoreModal(r); setScores({}); setProposedLv(''); setDecision(''); setComment('') }}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition">
                     ⚖️ Chấm điểm
                   </button>
                 </div>
@@ -491,10 +575,7 @@ export default function CouncilPage({ user, onLogout }) {
             ))}
 
             {!queue.length && (
-              <div className="text-center py-16 text-gray-600">
-                <div className="text-5xl mb-3 opacity-40">⚖️</div>
-                <p>Không có hồ sơ chờ chấm điểm</p>
-              </div>
+              <div className="text-center py-16 text-gray-600"><div className="text-5xl mb-3 opacity-40">⚖️</div><p>Không có hồ sơ chờ chấm điểm</p></div>
             )}
           </div>
         )}
@@ -503,23 +584,16 @@ export default function CouncilPage({ user, onLogout }) {
           <div>
             <h2 className="text-2xl font-bold text-white mb-6">Xử lý kháng cáo</h2>
             {!appeals.length ? (
-              <div className="text-center py-16 text-gray-600">
-                <div className="text-5xl mb-3 opacity-40">📢</div>
-                <p>Không có kháng cáo</p>
-              </div>
+              <div className="text-center py-16 text-gray-600"><div className="text-5xl mb-3 opacity-40">📢</div><p>Không có kháng cáo</p></div>
             ) : appeals.map(r => {
               const last = r.appeals?.[r.appeals.length - 1]
               return (
                 <div key={r.id} className="bg-gray-900 border border-yellow-500/30 rounded-xl p-5 mb-4">
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-white font-bold">📢 {r.engName}</span>
-                    <span className="text-xs bg-orange-500/10 text-orange-400 border border-orange-500/30 px-2 py-0.5 rounded-full">
-                      Kháng cáo vòng {last?.round}
-                    </span>
+                    <span className="text-xs bg-orange-500/10 text-orange-400 border border-orange-500/30 px-2 py-0.5 rounded-full">Kháng cáo vòng {last?.round}</span>
                   </div>
-                  <div className="bg-yellow-500/10 border border-yellow-500/20 text-yellow-300 text-sm px-4 py-3 rounded-lg mb-4">
-                    💬 "{last?.text}"
-                  </div>
+                  <div className="bg-yellow-500/10 border border-yellow-500/20 text-yellow-300 text-sm px-4 py-3 rounded-lg mb-4">💬 "{last?.text}"</div>
                   <button onClick={() => { setReplyModal(r); setReplyText(''); setReplyLv('') }}
                     className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition">
                     📝 Phản hồi
@@ -527,6 +601,115 @@ export default function CouncilPage({ user, onLogout }) {
                 </div>
               )
             })}
+          </div>
+        )}
+
+        {/* TAB: Chờ duyệt */}
+        {tab === 'approvals' && (
+          <div>
+            <h2 className="text-2xl font-bold text-white mb-2">Yêu cầu chờ duyệt</h2>
+            <p className="text-gray-500 text-sm mb-6">PO gửi yêu cầu thêm nhân sự / đối tác → duyệt hoặc từ chối</p>
+
+            {!pendingList.length && !reviewedList.length ? (
+              <div className="text-center py-16 text-gray-600"><div className="text-5xl mb-3 opacity-40">🔔</div><p>Không có yêu cầu nào</p></div>
+            ) : (
+              <>
+                {pendingList.length > 0 && (
+                  <div className="mb-8">
+                    <h3 className="text-yellow-400 text-sm font-semibold mb-3">⏳ ĐANG CHỜ DUYỆT ({pendingList.length})</h3>
+                    <div className="space-y-3">
+                      {pendingList.map(req => (
+                        <div key={req.id} className="bg-gray-900 border border-yellow-500/30 rounded-xl p-5">
+                          <div className="flex items-start justify-between mb-3">
+                            <div className="flex items-start gap-3">
+                              <span className="text-2xl">{req.type === 'staff' ? '👤' : '🏭'}</span>
+                              <div>
+                                <div className="text-white font-bold">{req.payload.name}</div>
+                                <div className="text-gray-500 text-xs mt-1">
+                                  {req.type === 'staff' ? `Nhân sự · ${ROLE_LABEL[req.payload.role]}${req.payload.team ? ' · ' + req.payload.team : ''}` : 'Đối tác in 3D'}
+                                </div>
+                                <div className="text-gray-500 text-xs mt-1">
+                                  Người gửi: <span className="text-cyan-400">{req.requester?.name}</span>
+                                  {req.requester?.team && <span> · {req.requester.team}</span>}
+                                  <span> · {new Date(req.created_at).toLocaleString('vi-VN')}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Chi tiết payload */}
+                          <div className="bg-gray-800/50 rounded-lg p-4 mb-4 space-y-2">
+                            {req.type === 'staff' && (
+                              <>
+                                <DetailRow label="Email" value={req.payload.email} />
+                                {req.payload.team && <DetailRow label="Team" value={req.payload.team} />}
+                                <DetailRow label="Mật khẩu" value={req.payload.password} />
+                              </>
+                            )}
+                            {req.type === 'partner' && (
+                              <>
+                                {req.payload.phone && <DetailRow label="SĐT" value={req.payload.phone} />}
+                                {req.payload.contact_person && <DetailRow label="Liên hệ" value={req.payload.contact_person} />}
+                                {req.payload.address && <DetailRow label="Địa chỉ" value={req.payload.address} />}
+                                {req.payload.technology && <DetailRow label="Công nghệ" value={req.payload.technology} />}
+                                {req.payload.avg_price > 0 && <DetailRow label="Giá TB" value={`${Number(req.payload.avg_price).toLocaleString()} USD`} />}
+                                {req.payload.notes && <DetailRow label="Ghi chú" value={req.payload.notes} />}
+                                {req.payload.create_account && (
+                                  <>
+                                    <DetailRow label="Email đăng nhập" value={req.payload.email} />
+                                    <DetailRow label="Mật khẩu" value={req.payload.password} />
+                                  </>
+                                )}
+                              </>
+                            )}
+                          </div>
+
+                          <div className="flex justify-end gap-3">
+                            <button onClick={() => openReview(req, 'reject')}
+                              className="bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 px-4 py-2 rounded-lg text-sm font-semibold transition">
+                              ❌ Từ chối
+                            </button>
+                            <button onClick={() => openReview(req, 'approve')}
+                              className="bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded-lg text-sm font-semibold transition">
+                              ✅ Duyệt
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {reviewedList.length > 0 && (
+                  <div>
+                    <h3 className="text-gray-500 text-sm font-semibold mb-3">📜 LỊCH SỬ ({reviewedList.length})</h3>
+                    <div className="space-y-2">
+                      {reviewedList.map(req => (
+                        <div key={req.id} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <span className="text-xl">{req.type === 'staff' ? '👤' : '🏭'}</span>
+                              <div>
+                                <div className="text-white text-sm font-semibold">{req.payload.name}</div>
+                                <div className="text-gray-500 text-xs">
+                                  {req.type === 'staff' ? 'Nhân sự' : 'Đối tác'} · Người gửi: {req.requester?.name}
+                                </div>
+                              </div>
+                            </div>
+                            <span className={`text-xs font-semibold px-3 py-1 rounded-full border ${req.status === 'approved' ? 'bg-green-500/10 text-green-400 border-green-500/30' : 'bg-red-500/10 text-red-400 border-red-500/30'}`}>
+                              {req.status === 'approved' ? '✅ Đã duyệt' : '❌ Đã từ chối'}
+                            </span>
+                          </div>
+                          {req.review_note && (
+                            <div className="text-gray-400 text-xs mt-2 italic">💬 {req.review_note}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
 
@@ -563,9 +746,7 @@ export default function CouncilPage({ user, onLogout }) {
                       <td className="px-5 py-3 text-white font-mono text-sm">{e.current_level ?? '—'}</td>
                       <td className="px-5 py-3 text-white font-mono text-sm">{e.record?.scoring?.proposedLevel || '—'}</td>
                       <td className="px-5 py-3">
-                        <span className="text-xs font-semibold px-2 py-1 rounded-full bg-gray-800 text-gray-400">
-                          {e.record?.state || 'draft'}
-                        </span>
+                        <span className="text-xs font-semibold px-2 py-1 rounded-full bg-gray-800 text-gray-400">{e.record?.state || 'draft'}</span>
                       </td>
                     </tr>
                   ))}
@@ -585,10 +766,7 @@ export default function CouncilPage({ user, onLogout }) {
               </button>
             </div>
             {!projects.length ? (
-              <div className="text-center py-16 text-gray-600">
-                <div className="text-5xl mb-3 opacity-40">🗂</div>
-                <p>Chưa có dự án nào</p>
-              </div>
+              <div className="text-center py-16 text-gray-600"><div className="text-5xl mb-3 opacity-40">🗂</div><p>Chưa có dự án nào</p></div>
             ) : (
               <div className="grid grid-cols-2 gap-4">
                 {projects.map(p => (
@@ -600,9 +778,7 @@ export default function CouncilPage({ user, onLogout }) {
                     </div>
                     <div className="text-gray-500 text-sm mb-2">Chủ dự án: {p.users?.name || '?'}</div>
                     {(p.contract_price > 0 || p.paid_amount > 0) && (
-                      <div className="text-gray-400 text-xs">
-                        💰 {Number(p.paid_amount).toLocaleString()} / {Number(p.contract_price).toLocaleString()} USD
-                      </div>
+                      <div className="text-gray-400 text-xs">💰 {Number(p.paid_amount).toLocaleString()} / {Number(p.contract_price).toLocaleString()} USD</div>
                     )}
                     {p.deadline && (<div className="text-gray-400 text-xs mt-1">📅 Deadline: {p.deadline}</div>)}
                   </button>
@@ -626,10 +802,7 @@ export default function CouncilPage({ user, onLogout }) {
             </div>
 
             {!partners.length ? (
-              <div className="text-center py-16 text-gray-600">
-                <div className="text-5xl mb-3 opacity-40">🏭</div>
-                <p>Chưa có đối tác in 3D nào</p>
-              </div>
+              <div className="text-center py-16 text-gray-600"><div className="text-5xl mb-3 opacity-40">🏭</div><p>Chưa có đối tác in 3D nào</p></div>
             ) : (
               <div className="grid grid-cols-2 gap-4">
                 {partners.map(p => (
@@ -638,20 +811,14 @@ export default function CouncilPage({ user, onLogout }) {
                     <div className="flex items-center justify-between mb-3">
                       <div className="text-white font-bold">🏭 {p.name}</div>
                       <div className="flex gap-1">
-                        {p.user_id && (
-                          <span className="text-xs bg-green-500/10 text-green-400 px-2 py-0.5 rounded-full" title="Đã có tài khoản">🔑</span>
-                        )}
-                        {p.technology && (
-                          <span className="text-xs bg-cyan-500/10 text-cyan-400 px-2 py-0.5 rounded-full">{p.technology}</span>
-                        )}
+                        {p.user_id && <span className="text-xs bg-green-500/10 text-green-400 px-2 py-0.5 rounded-full">🔑</span>}
+                        {p.technology && <span className="text-xs bg-cyan-500/10 text-cyan-400 px-2 py-0.5 rounded-full">{p.technology}</span>}
                       </div>
                     </div>
                     {p.contact_person && <div className="text-gray-400 text-sm mb-1">👤 {p.contact_person}</div>}
                     {p.phone && <div className="text-gray-400 text-sm mb-1">📞 {p.phone}</div>}
                     {p.address && <div className="text-gray-500 text-xs mb-2">📍 {p.address}</div>}
-                    {p.avg_price > 0 && (
-                      <div className="text-gray-400 text-xs">💰 Giá TB: {Number(p.avg_price).toLocaleString()} USD</div>
-                    )}
+                    {p.avg_price > 0 && <div className="text-gray-400 text-xs">💰 Giá TB: {Number(p.avg_price).toLocaleString()} USD</div>}
                   </button>
                 ))}
               </div>
@@ -716,8 +883,7 @@ export default function CouncilPage({ user, onLogout }) {
                 {SKILLS.map(s => (
                   <div key={s.id} className="bg-gray-800 border border-gray-700 rounded-xl p-4">
                     <div className="text-gray-300 text-xs font-semibold mb-2">{s.icon} {s.name}</div>
-                    <input type="number" min="0" max="3" step="0.5"
-                      value={scores[s.id]?.score || ''}
+                    <input type="number" min="0" max="3" step="0.5" value={scores[s.id]?.score || ''}
                       onChange={e => setScores({ ...scores, [s.id]: { ...scores[s.id], score: e.target.value } })}
                       placeholder="0 – 3"
                       className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-indigo-500 text-center font-mono mb-2 transition"
@@ -804,6 +970,67 @@ export default function CouncilPage({ user, onLogout }) {
             <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-800">
               <button onClick={() => setReplyModal(null)} className="text-gray-400 border border-gray-700 px-5 py-2 rounded-lg text-sm hover:text-white transition">Hủy</button>
               <button onClick={submitReply} className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-5 py-2 rounded-lg text-sm transition">Gửi phản hồi →</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Review (Duyệt/Từ chối) */}
+      {reviewModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-5 border-b border-gray-800">
+              <h3 className="text-white font-bold text-lg">
+                {reviewAction === 'approve' ? '✅ Duyệt yêu cầu' : '❌ Từ chối yêu cầu'}
+              </h3>
+              <button onClick={() => { setReviewModal(null); setReviewAction('') }}
+                className="text-gray-500 hover:text-white w-8 h-8 flex items-center justify-center rounded-lg border border-gray-700 transition">✕</button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <div className="bg-gray-800/50 rounded-lg p-4">
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">{reviewModal.type === 'staff' ? '👤' : '🏭'}</span>
+                  <div>
+                    <div className="text-white font-bold">{reviewModal.payload.name}</div>
+                    <div className="text-gray-500 text-xs">
+                      {reviewModal.type === 'staff' ? `Nhân sự · ${ROLE_LABEL[reviewModal.payload.role]}` : 'Đối tác in 3D'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {reviewAction === 'approve' ? (
+                <div className="bg-green-500/10 border border-green-500/30 text-green-400 text-sm px-4 py-3 rounded-lg">
+                  Khi duyệt, hệ thống sẽ tự động tạo {reviewModal.type === 'staff' ? 'tài khoản nhân sự' : 'đối tác (và tài khoản nếu có)'} từ thông tin trên.
+                </div>
+              ) : (
+                <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-sm px-4 py-3 rounded-lg">
+                  ⚠️ Yêu cầu sẽ bị từ chối. PO sẽ thấy trạng thái "Đã từ chối" cùng lý do.
+                </div>
+              )}
+
+              <div>
+                <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">
+                  Ghi chú {reviewAction === 'reject' ? <span className="text-red-400">*</span> : '(tùy chọn)'}
+                </label>
+                <textarea value={reviewNote} onChange={e => setReviewNote(e.target.value)}
+                  rows={3}
+                  placeholder={reviewAction === 'reject' ? 'Vui lòng nhập lý do từ chối...' : 'Ghi chú cho PO (tùy chọn)...'}
+                  className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 resize-none transition"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-800">
+              <button onClick={() => { setReviewModal(null); setReviewAction('') }}
+                className="text-gray-400 border border-gray-700 px-5 py-2 rounded-lg text-sm hover:text-white transition">
+                Hủy
+              </button>
+              <button onClick={submitReview}
+                className={`font-semibold px-5 py-2 rounded-lg text-sm transition text-white ${
+                  reviewAction === 'approve' ? 'bg-green-600 hover:bg-green-500' : 'bg-red-600 hover:bg-red-500'
+                }`}>
+                {reviewAction === 'approve' ? '✅ Xác nhận duyệt' : '❌ Xác nhận từ chối'}
+              </button>
             </div>
           </div>
         </div>
@@ -911,7 +1138,7 @@ export default function CouncilPage({ user, onLogout }) {
                     <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Mô tả dự án</label>
                     <textarea value={projectForm.description} disabled={!isCreatingProject && !projectEditing}
                       onChange={e => setProjectForm({ ...projectForm, description: e.target.value })}
-                      rows={3} placeholder="Mô tả chi tiết..."
+                      rows={3} placeholder="Mô tả..."
                       className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 resize-none transition disabled:opacity-70"
                     />
                   </div>
@@ -919,7 +1146,7 @@ export default function CouncilPage({ user, onLogout }) {
                     <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Tiêu chí nghiệm thu</label>
                     <textarea value={projectForm.acceptance_criteria} disabled={!isCreatingProject && !projectEditing}
                       onChange={e => setProjectForm({ ...projectForm, acceptance_criteria: e.target.value })}
-                      rows={3} placeholder="Tiêu chí đánh giá..."
+                      rows={3} placeholder="Tiêu chí..."
                       className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 resize-none transition disabled:opacity-70"
                     />
                   </div>
@@ -959,7 +1186,7 @@ export default function CouncilPage({ user, onLogout }) {
         </div>
       )}
 
-      {/* MODAL: Đối tác in 3D */}
+      {/* MODAL: Đối tác */}
       {partnerModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto shadow-2xl">
@@ -1001,7 +1228,7 @@ export default function CouncilPage({ user, onLogout }) {
                 <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Địa chỉ</label>
                 <input value={partnerForm.address} disabled={!isCreatingPartner && !partnerEditing}
                   onChange={e => setPartnerForm({ ...partnerForm, address: e.target.value })}
-                  placeholder="VD: 123 Nguyễn Trãi, Thanh Xuân, Hà Nội"
+                  placeholder="VD: 123 Nguyễn Trãi..."
                   className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition disabled:opacity-70"
                 />
               </div>
@@ -1032,26 +1259,21 @@ export default function CouncilPage({ user, onLogout }) {
                 <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Ghi chú</label>
                 <textarea value={partnerForm.notes} disabled={!isCreatingPartner && !partnerEditing}
                   onChange={e => setPartnerForm({ ...partnerForm, notes: e.target.value })}
-                  rows={3} placeholder="Đánh giá chất lượng..."
+                  rows={3} placeholder="Đánh giá..."
                   className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 resize-none transition disabled:opacity-70"
                 />
               </div>
 
-              {/* Info tạo bởi ai */}
               {!isCreatingPartner && !partnerEditing && partnerModal.users?.name && (
-                <div className="text-gray-500 text-xs italic">
-                  Tạo bởi: {partnerModal.users.name}
-                </div>
+                <div className="text-gray-500 text-xs italic">Tạo bởi: {partnerModal.users.name}</div>
               )}
 
-              {/* Thông báo đã có tài khoản */}
               {partnerHasAccount && !partnerEditing && (
                 <div className="bg-green-500/10 border border-green-500/30 rounded-lg px-4 py-3">
                   <p className="text-green-400 text-sm">🔑 Đối tác này đã có tài khoản đăng nhập</p>
                 </div>
               )}
 
-              {/* Form tạo tài khoản - chỉ hiện khi tạo mới đối tác */}
               {isCreatingPartner && (
                 <div className="pt-4 border-t border-gray-800 space-y-4">
                   <label className="flex items-center gap-3 cursor-pointer">
@@ -1061,14 +1283,11 @@ export default function CouncilPage({ user, onLogout }) {
                     />
                     <span className="text-white text-sm font-semibold">🔑 Tạo tài khoản đăng nhập cho đối tác</span>
                   </label>
-                  <p className="text-gray-500 text-xs -mt-2 ml-7">
-                    Đối tác sẽ đăng nhập để xem thông tin, đơn in, tiến độ...
-                  </p>
 
                   {partnerForm.create_account && (
                     <div className="grid grid-cols-2 gap-4 bg-indigo-500/5 border border-indigo-500/20 rounded-lg p-4">
                       <div className="col-span-2">
-                        <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Email đăng nhập <span className="text-red-400">*</span></label>
+                        <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Email <span className="text-red-400">*</span></label>
                         <input type="email" value={partnerForm.email}
                           onChange={e => setPartnerForm({ ...partnerForm, email: e.target.value })}
                           placeholder="partner@example.com"
@@ -1147,7 +1366,7 @@ export default function CouncilPage({ user, onLogout }) {
               <div>
                 <label className="text-gray-400 text-xs font-semibold uppercase tracking-wider">Mật khẩu</label>
                 <input type="text" value={staffForm.password} onChange={e => setStaffForm({ ...staffForm, password: e.target.value })}
-                  placeholder="VD: TenNguoi@123"
+                  placeholder="Tối thiểu 6 ký tự"
                   className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-indigo-500 transition"
                 />
               </div>
@@ -1178,6 +1397,15 @@ export default function CouncilPage({ user, onLogout }) {
         </div>
       )}
 
+    </div>
+  )
+}
+
+function DetailRow({ label, value }) {
+  return (
+    <div className="flex items-start gap-3 text-sm">
+      <span className="text-gray-500 w-32 shrink-0">{label}:</span>
+      <span className="text-white">{value}</span>
     </div>
   )
 }
